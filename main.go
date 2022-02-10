@@ -97,6 +97,15 @@ func loadConfigFile(configPath string) *hidemeConfig {
 	return config
 }
 
+// hide the files
+func hidefiles(config hidemeConfig, paths []string, file string) {
+	// create the AES encryption
+
+	// read the file
+
+	// sepreately encrypt and write each chunk
+}
+
 // hideme
 func hideme(config *hidemeConfig, file string) error {
 	// the main hideme function
@@ -165,7 +174,8 @@ func hideme(config *hidemeConfig, file string) error {
 		fmt.Scanln(&config.password)
 	}
 
-	// 
+	// create the new files
+	err := hidefiles(config, paths, file)
 
 	return nil
 }
