@@ -1,0 +1,11 @@
+./main.go:15:2: imported and not used: "fmt"
+./main.go:39:27: config.randomExtensions undefined (type *hidemeConfig has no field or method randomExtensions)
+./main.go:55:1: missing return at end of function
+./main.go:61:21: missing type in composite literal
+./main.go:64:3: unknown field 'randomExtensions' in struct literal of type hidemeConfig
+./main.go:65:21: missing type in composite literal
+./main.go:67:21: missing type in composite literal
+./main.go:79:19: undefined: os
+./main.go:80:20: undefined: os
+./main.go:88:18: cannot use math.Ceil(fileInfo.Size() / 104857600) (type float64) as type int in assignment
+./main.go:88:18: too many errors
