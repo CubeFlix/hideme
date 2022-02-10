@@ -11,12 +11,19 @@ import (
 	"math"
 	"runtime"
 	"os"
+	"path"
 	"strings"
 	"errors"
 	"fmt"
 	"time"
+	"os/user"
 )
 
+
+// dumb version info
+const (
+	Version = "v0.0"
+)
 
 // probably a good idea to wipe this file afterwards
 type hidemeConfig struct {
@@ -27,14 +34,14 @@ type hidemeConfig struct {
 	locationsTryWin      []string `json:"locationsTryWin"`
 	locationsTryUnix     []string `json:"locationsTryUnix"`
 	chunks               int      `json:"chunks"`
-	passphrase           string   `json:"passphrase"`
+	password             string   `json:"password"`
 }
 
 
 // voodoo numbers
 const (
-	MagicDB = "SQLite format 3\000"
-	MagicPE = "PK"
+	magicDB = "SQLite format 3\000"
+	magicPE = "PK"
 )
 
 
@@ -52,6 +59,23 @@ func getFileName(config *hidemeConfig) string {
 }
 
 
+// get a random path
+func getHidePath(config *hidemeConfig, username string) string {
+	hidepath := ""
+
+	if runtime.GOOS == "windows" {
+                // window more like glass
+		hidepath = config.locationsTryWin[rand.Intn(len(config.locationsTryWin))]
+        } else {
+		// literally everything else
+		hidepath = config.locationsTryUnix[rand.Intn(len(config.locationsTryUnix))]
+	}
+
+	hidepath = strings.Replace(hidepath, "%username%", username, -1)
+	return hidepath
+}
+
+
 // load the config file
 func loadConfigFile(configPath string) *hidemeConfig {
 	// default configuration
@@ -65,7 +89,7 @@ func loadConfigFile(configPath string) *hidemeConfig {
 		randomExtensionsWin:  []string{"db", "tmp", "sys", "plist", "log", "info", "inf", "dll", "pkg", "spec", "mta", "dat", "bin"},
 		randomExtensionsUnix: []string{"db", "tmp", "log", "info", "inf", "pkg", "spec", "mta", "dat", "bin"},
 		locationsTryWin:      []string{"c:/", "c:/temp", "c:/tmp", "c:/windows/Temp", "c:/users", "c:/users/%username%/AppData/", "c:/users/%username%/appdata/local",
-			"c:/logs", "c:/perflogs", "c:/%WinLogs", "c:/riot games"}, // oh yes i sure do love people putting things in my valorant install folder
+			"c:/logs", "c:/perflogs", "c:/%WinLogs", "c:/Riot Games"}, // oh yes i sure do love people putting things in my valorant install folder
 		locationsTryUnix:     []string{"/home/%username%/.local", "/home/%username%/.sysproc", "/home/%username%/", "/etc/.configdata/", "/etc/.tempinfo/"}, // hidden linux stuff
 		chunks:               0, // auto-calculate the value like a big boy
 	}
@@ -77,6 +101,14 @@ func loadConfigFile(configPath string) *hidemeConfig {
 func hideme(config *hidemeConfig, file string) error {
 	// the main hideme function
 
+	// h e a d e r
+	fmt.Println("==========")
+	fmt.Println("hideme " + Version)
+	fmt.Println()
+	fmt.Println("hide all your files in plain sight")
+	fmt.Println("==========")
+	fmt.Println()
+
 	// seed the magic man
 	rand.Seed(time.Now().UnixNano())
 
@@ -87,7 +119,7 @@ func hideme(config *hidemeConfig, file string) error {
 	}
 
 	if fileInfo.Size() == 0 {
-		return errors.New("too small")
+		return errors.New("file too small")
 	}
 
 	// see if we should calculate the split value
@@ -99,13 +131,41 @@ func hideme(config *hidemeConfig, file string) error {
 		config.chunks = 1
 	}
 
-	// get the filenames for each chunk
-	var filenames []string
+	// get the filenames and paths for each chunk
+	var paths []string
 	for i := 0; i < config.chunks; i++ {
-		filenames = append(filenames, getFileName(config))
+		// get a path to store in
+		// resolve username
+		userobj, err := user.Current()
+		username := ""
+		if err != nil {
+			fmt.Printf("username for resolving user path: ")
+			fmt.Scanln(&username)
+		} else {
+			username = userobj.Username
+		}
+		storepath := getHidePath(config, username)
+
+		for {
+			if os.MkdirAll(storepath, os.ModePerm) == nil {
+				break
+			}
+			fmt.Println(os.MkdirAll(storepath, os.ModePerm).Error())
+			storepath = getHidePath(config, username)
+		}
+
+		paths = append(paths, path.Join(storepath, getFileName(config)))
 	}
 
-	fmt.Println(filenames)
+	fmt.Println("hiding in: ", paths)
+
+	// get a password if required
+	if config.password == "" {
+		fmt.Printf("password for encryption: ")
+		fmt.Scanln(&config.password)
+	}
+
+	// 
 
 	return nil
 }
