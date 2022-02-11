@@ -15,8 +15,15 @@ import (
 	"strings"
 	"errors"
 	"fmt"
+	"bufio"
 	"time"
 	"os/user"
+	"golang.org/x/crypto/pbkdf2"
+	"crypto/aes"
+	"crypto/cipher"
+	crand "crypto/rand"
+	"crypto/sha1"
+	"io"
 )
 
 
@@ -34,14 +41,15 @@ type hidemeConfig struct {
 	locationsTryWin      []string `json:"locationsTryWin"`
 	locationsTryUnix     []string `json:"locationsTryUnix"`
 	chunks               int      `json:"chunks"`
+	chunkSize            int64    `json:"chunkSize"`
 	password             string   `json:"password"`
 }
 
 
 // voodoo numbers
 const (
-	magicDB = "SQLite format 3\000"
-	magicPE = "PK"
+	MagicDB = "SQLite format 3\000"
+	MagicPE = "PK"
 )
 
 
@@ -55,7 +63,7 @@ func getFileName(config *hidemeConfig) string {
 
 	// literally everything else
 	extension := "." + config.randomExtensionsUnix[rand.Intn(len(config.randomExtensionsUnix))]
-	return strings.ToLower(config.randomFilenamesUnix[rand.Intn(len(config.randomFilenamesUnix))]) + extension
+	return "." + strings.ToLower(config.randomFilenamesUnix[rand.Intn(len(config.randomFilenamesUnix))]) + extension
 }
 
 
@@ -92,18 +100,82 @@ func loadConfigFile(configPath string) *hidemeConfig {
 			"c:/logs", "c:/perflogs", "c:/%WinLogs", "c:/Riot Games"}, // oh yes i sure do love people putting things in my valorant install folder
 		locationsTryUnix:     []string{"/home/%username%/.local", "/home/%username%/.sysproc", "/home/%username%/", "/etc/.configdata/", "/etc/.tempinfo/"}, // hidden linux stuff
 		chunks:               0, // auto-calculate the value like a big boy
+		chunkSize:            1048576000,
 	}
 
 	return config
 }
 
 // hide the files
-func hidefiles(config hidemeConfig, paths []string, file string) {
-	// create the AES encryption
+func hidefiles(config *hidemeConfig, paths []string, file string) error {
+	fmt.Println()
+	fmt.Println("beginning encryption process")
 
-	// read the file
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		return err
+	}
+
+	// create the AES encryption
+	dk := pbkdf2.Key([]byte(config.password), salt, 4096, 32, sha1.New)
+	fmt.Println("generated key")
+	block, err := aes.NewCipher(dk)
+	if err != nil {
+		return err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(crand.Reader, nonce); err != nil {
+		return err
+	}
+	fmt.Println("generated block")
+
+	// open the file
+	f, err := os.Open(file)
+	defer f.Close()
+	if err != nil {
+		return err
+	}
+	reader := bufio.NewReader(f)
 
 	// sepreately encrypt and write each chunk
+	// go through each chunk file
+	for i := 0; i < len(paths); i++ {
+		fmt.Println("generating chunk", i)
+		// read the section
+		buf := make([]byte, config.chunkSize)
+		n, err := reader.Read(buf) //loading chunk into buffer
+		if err != nil {
+			return err
+		}
+		buf = buf[:n]
+
+		// create the new file
+		chunkFile, err := os.Create(paths[i])
+		if err != nil {
+			return err
+		}
+
+		// write m a g i c
+		if strings.HasSuffix(paths[i], ".db") {
+			chunkFile.Write([]byte(MagicDB))
+		} else if strings.HasSuffix(paths[i], ".exe") || strings.HasSuffix(paths[i], ".sys") || strings.HasSuffix(paths[i], ".dll") {
+			chunkFile.Write([]byte(MagicPE))
+		}
+
+		chunkFile.Write(salt)
+
+		// we can encrypt the buffer
+		encryptedData := gcm.Seal(nonce, nonce, buf, nil)
+		chunkFile.Write(encryptedData)
+		chunkFile.Close()
+	}
+
+	fmt.Println("done")
+	return nil
 }
 
 // hideme
@@ -115,6 +187,7 @@ func hideme(config *hidemeConfig, file string) error {
 	fmt.Println("hideme " + Version)
 	fmt.Println()
 	fmt.Println("hide all your files in plain sight")
+	fmt.Println("i am not responsible for illegal activity caused by this tool")
 	fmt.Println("==========")
 	fmt.Println()
 
@@ -134,8 +207,8 @@ func hideme(config *hidemeConfig, file string) error {
 	// see if we should calculate the split value
 	if config.chunks == 0 {
 		// the average size should be about 100 megabytes
-		if fileInfo.Size() > 104857600 {
-			config.chunks = int(math.Ceil(float64(fileInfo.Size()) / float64(104857600)))
+		if fileInfo.Size() > config.chunkSize {
+			config.chunks = int(math.Ceil(float64(fileInfo.Size()) / float64(config.chunkSize)))
 		}
 		config.chunks = 1
 	}
@@ -175,7 +248,7 @@ func hideme(config *hidemeConfig, file string) error {
 	}
 
 	// create the new files
-	err := hidefiles(config, paths, file)
+	err = hidefiles(config, paths, file)
 
 	return nil
 }
