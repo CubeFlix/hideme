@@ -24,6 +24,7 @@ import (
 	crand "crypto/rand"
 	"crypto/sha1"
 	"io"
+	"encoding/binary"
 )
 
 
@@ -100,7 +101,7 @@ func loadConfigFile(configPath string) *hidemeConfig {
 			"c:/logs", "c:/perflogs", "c:/%WinLogs", "c:/Riot Games"}, // oh yes i sure do love people putting things in my valorant install folder
 		locationsTryUnix:     []string{"/home/%username%/.local", "/home/%username%/.sysproc", "/home/%username%/", "/etc/.configdata/", "/etc/.tempinfo/"}, // hidden linux stuff
 		chunks:               0, // auto-calculate the value like a big boy
-		chunkSize:            1048576000,
+		chunkSize:            52428800,
 	}
 
 	return config
@@ -131,6 +132,7 @@ func hidefiles(config *hidemeConfig, paths []string, file string) error {
 	if _, err := io.ReadFull(crand.Reader, nonce); err != nil {
 		return err
 	}
+	fmt.Println(nonce, dk, gcm, block)
 	fmt.Println("generated block")
 
 	// open the file
@@ -144,14 +146,32 @@ func hidefiles(config *hidemeConfig, paths []string, file string) error {
 	// sepreately encrypt and write each chunk
 	// go through each chunk file
 	for i := 0; i < len(paths); i++ {
-		fmt.Println("generating chunk", i)
+		fmt.Println("generating chunk:", i, paths[i])
 		// read the section
-		buf := make([]byte, config.chunkSize)
-		n, err := reader.Read(buf) //loading chunk into buffer
+		extraBytes := 4
+		if i == len(paths) - 1 {
+			// last one
+		} else {
+			// account for the length of the next path
+			extraBytes += len(paths[i + 1])
+		}
+		buf := make([]byte, 4)
+		// include extra bytes
+		if i != len(paths) - 1 {
+			binary.LittleEndian.PutUint32(buf, uint32(len(paths[i + 1])))
+			buf = append(buf, []byte(paths[i + 1])...)
+		} else {
+			binary.LittleEndian.PutUint32(buf, uint32(0))
+		}
+
+		// start actual data
+		newBuf := make([]byte, config.chunkSize)
+		n, err := reader.Read(newBuf) // loading chunk into buffer
 		if err != nil {
 			return err
 		}
-		buf = buf[:n]
+		newBuf = newBuf[:n]
+		buf = append(buf, newBuf...)
 
 		// create the new file
 		chunkFile, err := os.Create(paths[i])
@@ -168,13 +188,143 @@ func hidefiles(config *hidemeConfig, paths []string, file string) error {
 
 		chunkFile.Write(salt)
 
+		dstNonce := make([]byte, gcm.NonceSize())
+		dstNonce = nonce
 		// we can encrypt the buffer
-		encryptedData := gcm.Seal(nonce, nonce, buf, nil)
-		chunkFile.Write(encryptedData)
+		encryptedData := gcm.Seal(dstNonce, nonce, buf, nil)
+		bytesWritten, err := chunkFile.Write(encryptedData)
+		if err != nil {
+			chunkFile.Close()
+			return err
+		}
+		fmt.Println(len(encryptedData))
+		fmt.Println(encryptedData[:64], encryptedData[len(encryptedData) - 64:])
+		fmt.Println("wrote", bytesWritten, "bytes")
 		chunkFile.Close()
 	}
 
 	fmt.Println("done")
+	return nil
+}
+
+
+// decrypt the data
+func decryptfiles(path string, password string, save string) error {
+	fmt.Println()
+
+	// get the path
+	if path == "" {
+		fmt.Printf("no path included. please enter the name of the main path: ")
+		fmt.Scanln(&path)
+	}
+
+	// get the password
+	if password == "" {
+		fmt.Printf("password for decryption: ")
+		fmt.Scanln(&password)
+	}
+
+	// get the save path
+	if save == "" {
+		fmt.Printf("save path: ")
+		fmt.Scanln(&save)
+	}
+
+	// create the aes decryptor
+        fmt.Println("beginning decryption process")
+
+	// read out the salt from the first file
+	firstFile, err := os.Open(path)
+        if err != nil {
+		return err
+	}
+	ffReader := bufio.NewReader(firstFile)
+	// handle magic
+	salt := make([]byte, 16)
+	if strings.HasSuffix(path, ".db") {
+		ffbuf := make([]byte, len(MagicDB) + 16)
+                ffReader.Read(ffbuf)
+		salt = ffbuf[len(ffbuf) - 16:]
+        } else if strings.HasSuffix(path, ".exe") || strings.HasSuffix(path, ".sys") || strings.HasSuffix(path, ".dll") {
+		ffbuf := make([]byte, len(MagicPE) + 16)
+		ffReader.Read(ffbuf)
+		salt = ffbuf[len(ffbuf) - 16:]
+	} else {
+		ffbuf := make([]byte, 16)
+		ffReader.Read(ffbuf)
+		salt = ffbuf[len(ffbuf) - 16:]
+	}
+
+        // create the AES encryption
+        dk := pbkdf2.Key([]byte(password), salt, 4096, 32, sha1.New)
+        fmt.Println("generated key")
+        block, err := aes.NewCipher(dk)
+        if err != nil {
+		firstFile.Close()
+                return err
+        }
+        gcm, err := cipher.NewGCM(block)
+        if err != nil {
+		firstFile.Close()
+                return err
+        }
+        nonce := make([]byte, gcm.NonceSize())
+        ffReader.Read(nonce)
+	firstFile.Close()
+	fmt.Println(nonce, dk, gcm, block)
+	fmt.Println("generated block")
+
+        // start the loop (for each chunk file)
+	currentpath := path
+	for {
+		fileinfo, err := os.Stat(currentpath)
+		if err != nil {
+			return err
+		}
+		fileSize := fileinfo.Size()
+		reader, err := os.Open(currentpath)
+		if err != nil {
+			return err
+		}
+
+		// remove beginning bytes
+		// handle magic
+		extraBytes := 0
+		if strings.HasSuffix(currentpath, ".db") {
+			extraBytes = len(MagicDB) + 16 + gcm.NonceSize()
+			fileSize -= int64(len(MagicDB)) + 16 + int64(gcm.NonceSize())
+		} else if strings.HasSuffix(currentpath, ".exe") || strings.HasSuffix(currentpath, ".sys") || strings.HasSuffix(currentpath, ".dll") {
+			extraBytes = len(MagicPE) + 16 + gcm.NonceSize()
+			fileSize -= int64(len(MagicPE)) + 16 + int64(gcm.NonceSize())
+		} else {
+			fmt.Println(16 + gcm.NonceSize())
+			extraBytes = 16 + gcm.NonceSize()
+			fileSize -= 16 + int64(gcm.NonceSize())
+		}
+
+		fmt.Println(salt, nonce)
+
+		// decrypt
+		encData := make([]byte, fileSize + int64(extraBytes))
+		fmt.Println(fileSize)
+		_, err = reader.Read(encData)
+		if err != nil {
+			reader.Close()
+			return err
+		}
+		reader.Close()
+		encData = encData[extraBytes:]
+		fmt.Println(encData[:64], encData[len(encData) - 64 : ])
+		data, err := gcm.Open(nonce, nonce, encData, nil)
+		if err != nil {
+			reader.Close()
+			return err
+		}
+
+		fmt.Println(data[0 : 16])
+		fmt.Println(string(data[:32]))
+		break
+	}
 	return nil
 }
 
@@ -205,12 +355,14 @@ func hideme(config *hidemeConfig, file string) error {
 	}
 
 	// see if we should calculate the split value
+	fmt.Println("file size:", fileInfo.Size(), "chunks:", math.Ceil(float64(fileInfo.Size()) / float64(config.chunkSize)))
 	if config.chunks == 0 {
 		// the average size should be about 100 megabytes
 		if fileInfo.Size() > config.chunkSize {
 			config.chunks = int(math.Ceil(float64(fileInfo.Size()) / float64(config.chunkSize)))
+		} else {
+			config.chunks = 1
 		}
-		config.chunks = 1
 	}
 
 	// get the filenames and paths for each chunk
@@ -250,12 +402,36 @@ func hideme(config *hidemeConfig, file string) error {
 	// create the new files
 	err = hidefiles(config, paths, file)
 
-	return nil
+	return err
 }
+
+
+// decryption
+func decryptme(path string, password string, file string) error {
+        // the main hideme function
+
+        // h e a d e r
+        fmt.Println("==========")
+        fmt.Println("hideme " + Version)
+        fmt.Println()
+        fmt.Println("hide all your files in plain sight")
+        fmt.Println("i am not responsible for illegal activity caused by this tool")
+        fmt.Println("==========")
+        fmt.Println()
+
+        // seed the magic man
+        rand.Seed(time.Now().UnixNano())
+
+	// do the work
+	err := decryptfiles(path, password, file)
+	return err
+}
+
 
 func main() {
 	// main
-	err := hideme(loadConfigFile("config.json"), "test")
+	// err := hideme(loadConfigFile("test"), "200MB.bin")
+	err := decryptme("", "", "")
 	if err != nil {
 		fmt.Printf(err.Error() + "\n")
 	}
