@@ -132,7 +132,6 @@ func hidefiles(config *hidemeConfig, paths []string, file string) error {
 	if _, err := io.ReadFull(crand.Reader, nonce); err != nil {
 		return err
 	}
-	fmt.Println(nonce, dk, gcm, block)
 	fmt.Println("generated block")
 
 	// open the file
@@ -190,6 +189,7 @@ func hidefiles(config *hidemeConfig, paths []string, file string) error {
 
 		dstNonce := make([]byte, gcm.NonceSize())
 		dstNonce = nonce
+
 		// we can encrypt the buffer
 		encryptedData := gcm.Seal(dstNonce, nonce, buf, nil)
 		bytesWritten, err := chunkFile.Write(encryptedData)
@@ -197,8 +197,6 @@ func hidefiles(config *hidemeConfig, paths []string, file string) error {
 			chunkFile.Close()
 			return err
 		}
-		fmt.Println(len(encryptedData))
-		fmt.Println(encryptedData[:64], encryptedData[len(encryptedData) - 64:])
 		fmt.Println("wrote", bytesWritten, "bytes")
 		chunkFile.Close()
 	}
@@ -271,8 +269,14 @@ func decryptfiles(path string, password string, save string) error {
         nonce := make([]byte, gcm.NonceSize())
         ffReader.Read(nonce)
 	firstFile.Close()
-	fmt.Println(nonce, dk, gcm, block)
 	fmt.Println("generated block")
+
+	// create the new file
+        saveFile, err := os.Create(save)
+	defer saveFile.Close()
+        if err != nil {
+                return err
+        }
 
         // start the loop (for each chunk file)
 	currentpath := path
@@ -297,16 +301,12 @@ func decryptfiles(path string, password string, save string) error {
 			extraBytes = len(MagicPE) + 16 + gcm.NonceSize()
 			fileSize -= int64(len(MagicPE)) + 16 + int64(gcm.NonceSize())
 		} else {
-			fmt.Println(16 + gcm.NonceSize())
 			extraBytes = 16 + gcm.NonceSize()
 			fileSize -= 16 + int64(gcm.NonceSize())
 		}
 
-		fmt.Println(salt, nonce)
-
 		// decrypt
 		encData := make([]byte, fileSize + int64(extraBytes))
-		fmt.Println(fileSize)
 		_, err = reader.Read(encData)
 		if err != nil {
 			reader.Close()
@@ -314,16 +314,27 @@ func decryptfiles(path string, password string, save string) error {
 		}
 		reader.Close()
 		encData = encData[extraBytes:]
-		fmt.Println(encData[:64], encData[len(encData) - 64 : ])
-		data, err := gcm.Open(nonce, nonce, encData, nil)
+		data, err := gcm.Open(nil, nonce, encData, nil)
 		if err != nil {
 			reader.Close()
 			return err
 		}
 
-		fmt.Println(data[0 : 16])
-		fmt.Println(string(data[:32]))
-		break
+		// get the next path
+		lenNextPath := binary.LittleEndian.Uint32(data[:4])
+		// write the data
+		num, err := saveFile.Write(data[4+lenNextPath:])
+		if err != nil {
+			return err
+		}
+		fmt.Println("wrote", num, "bytes")
+
+		if lenNextPath == 0 {
+			// This is the final chunk file
+			break
+		} else {
+			currentpath = string(data[4:4+lenNextPath])
+		}
 	}
 	return nil
 }
